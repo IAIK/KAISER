@@ -3,7 +3,7 @@
 This repository contains our implementation of KAISER, a kernel isolation technique to close hardware side channels on kernel address information.
 We implemented KAISER as a _proof of concept_ for the Linux kernel and offer a patch as well as pre-build .deb packages.
 
-The [KASLR is Dead: Long Live KASLR](#) paper by Gruss, Lipp, Schwarz, Fellner, Maurice and Mangard is in submission to [ESSoS 2017](https://distrinet.cs.kuleuven.be/events/essos/2017).
+The [KASLR is Dead: Long Live KASLR](#) [ESSoS 2017](https://distrinet.cs.kuleuven.be/events/essos/2017) paper by Gruss, Lipp, Schwarz, Fellner, Maurice and Mangard.
 
 ## Repository Content
 
