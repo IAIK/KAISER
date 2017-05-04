@@ -1,6 +1,6 @@
-From cbcbee34233ca8987a728ba9e6a5b8bb6c38f3ca Mon Sep 17 00:00:00 2001
+From 03c413bc52f1ac253cf0f067605f367f3390d3f4 Mon Sep 17 00:00:00 2001
 From: Richard Fellner <richard.fellner@student.tugraz.at>
-Date: Fri, 24 Feb 2017 18:24:25 +0100
+Date: Thu, 4 May 2017 10:44:38 +0200
 Subject: [PATCH] KAISER: Kernel Address Isolation
 
 This patch introduces our implementation of KAISER (Kernel Address Isolation to
@@ -11,55 +11,41 @@ More information about the patch can be found on:
 
         https://github.com/IAIK/KAISER
 ---
- arch/x86/entry/common.c              |   9 ++
- arch/x86/entry/entry_64.S            |  16 ++++
- arch/x86/entry/entry_64_compat.S     |   6 +-
- arch/x86/include/asm/hw_irq.h        |   2 +-
- arch/x86/include/asm/irqflags.h      |  62 +++++++++++++
- arch/x86/include/asm/pgtable.h       |   3 +
- arch/x86/include/asm/pgtable_64.h    |  19 ++++
- arch/x86/include/asm/pgtable_types.h |  12 ++-
- arch/x86/include/asm/processor.h     |   7 +-
- arch/x86/kernel/cpu/common.c         |   4 +-
- arch/x86/kernel/espfix_64.c          |   6 ++
- arch/x86/kernel/head_64.S            |  16 +++-
- arch/x86/kernel/irqinit.c            |   2 +-
- arch/x86/kernel/process.c            |   2 +-
- arch/x86/mm/init_64.c                | 173 +++++++++++++++++++++++++++++++++++
- arch/x86/mm/pageattr.c               |   2 +-
- arch/x86/mm/pgtable.c                |  34 ++++++-
- include/asm-generic/vmlinux.lds.h    |  11 ++-
- include/linux/percpu-defs.h          |  30 ++++++
- init/main.c                          |   7 ++
- kernel/fork.c                        |   8 ++
- security/Kconfig                     |   7 ++
- 22 files changed, 422 insertions(+), 16 deletions(-)
+ arch/x86/entry/entry_64.S            | 17 +++++++++++++++++
+ arch/x86/entry/entry_64_compat.S     |  7 ++++++-
+ arch/x86/include/asm/hw_irq.h        |  2 +-
+ arch/x86/include/asm/pgtable.h       |  4 ++++
+ arch/x86/include/asm/pgtable_64.h    | 21 +++++++++++++++++++++
+ arch/x86/include/asm/pgtable_types.h | 12 ++++++++++--
+ arch/x86/include/asm/processor.h     |  7 ++++++-
+ arch/x86/kernel/cpu/common.c         |  4 ++--
+ arch/x86/kernel/espfix_64.c          |  6 ++++++
+ arch/x86/kernel/head_64.S            | 16 ++++++++++++----
+ arch/x86/kernel/irqinit.c            |  2 +-
+ arch/x86/kernel/process.c            |  2 +-
+ arch/x86/mm/Makefile                 |  2 +-
+ arch/x86/mm/pageattr.c               |  2 +-
+ arch/x86/mm/pgtable.c                | 28 +++++++++++++++++++++++++++-
+ include/asm-generic/vmlinux.lds.h    | 11 ++++++++++-
+ include/linux/percpu-defs.h          | 30 ++++++++++++++++++++++++++++++
+ init/main.c                          |  5 +++++
+ kernel/fork.c                        |  8 ++++++++
+ security/Kconfig                     |  7 +++++++
+ 20 files changed, 176 insertions(+), 17 deletions(-)
 
-diff --git a/arch/x86/entry/common.c b/arch/x86/entry/common.c
-index b83c61c..2051ebc 100644
---- a/arch/x86/entry/common.c
-+++ b/arch/x86/entry/common.c
-@@ -31,6 +31,15 @@
- #define CREATE_TRACE_POINTS
- #include <trace/events/syscalls.h>
-
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+// Upon kernel/user mode switch, it may happen that
-+// the address space has to be switched before the registers have been stored.
-+// To change the address space, another register is needed.
-+// A register therefore has to be stored/restored.
-+//
-+DEFINE_PER_CPU_USER_MAPPED(unsigned long, unsafe_stack_register_backup);
-+#endif
-+
- #ifdef CONFIG_CONTEXT_TRACKING
- /* Called on entry from user mode with IRQs off. */
- __visible inline void enter_from_user_mode(void)
 diff --git a/arch/x86/entry/entry_64.S b/arch/x86/entry/entry_64.S
-index 044d18e..4a28c4a 100644
+index 044d18e..631c7bf 100644
 --- a/arch/x86/entry/entry_64.S
 +++ b/arch/x86/entry/entry_64.S
-@@ -141,6 +141,7 @@ ENTRY(entry_SYSCALL_64)
+@@ -37,6 +37,7 @@
+ #include <asm/pgtable_types.h>
+ #include <asm/export.h>
+ #include <asm/frame.h>
++#include <asm/kaiser.h>
+ #include <linux/err.h>
+
+ .code64
+@@ -141,6 +142,7 @@ ENTRY(entry_SYSCALL_64)
  	 * it is too small to ever cause noticeable irq latency.
  	 */
  	SWAPGS_UNSAFE_STACK
@@ -67,7 +53,7 @@ index 044d18e..4a28c4a 100644
  	/*
  	 * A hypervisor implementation might want to use a label
  	 * after the swapgs, so that it can do the swapgs
-@@ -223,6 +224,7 @@ entry_SYSCALL_64_fastpath:
+@@ -223,6 +225,7 @@ entry_SYSCALL_64_fastpath:
  	movq	RIP(%rsp), %rcx
  	movq	EFLAGS(%rsp), %r11
  	RESTORE_C_REGS_EXCEPT_RCX_R11
@@ -75,7 +61,7 @@ index 044d18e..4a28c4a 100644
  	movq	RSP(%rsp), %rsp
  	USERGS_SYSRET64
 
-@@ -318,10 +320,12 @@ return_from_SYSCALL_64:
+@@ -318,10 +321,12 @@ return_from_SYSCALL_64:
  syscall_return_via_sysret:
  	/* rcx and r11 are already restored (see code above) */
  	RESTORE_C_REGS_EXCEPT_RCX_R11
@@ -88,7 +74,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS
  	jmp	restore_c_regs_and_iret
  END(entry_SYSCALL_64)
-@@ -420,6 +424,7 @@ ENTRY(ret_from_fork)
+@@ -420,6 +425,7 @@ ENTRY(ret_from_fork)
  	leaq	FRAME_OFFSET(%rsp),%rdi	/* pt_regs pointer */
  	call	syscall_return_slowpath	/* returns with IRQs disabled */
  	TRACE_IRQS_ON			/* user mode is traced as IRQS on */
@@ -96,7 +82,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS
  	FRAME_END
  	jmp	restore_regs_and_iret
-@@ -476,6 +481,7 @@ END(irq_entries_start)
+@@ -476,6 +482,7 @@ END(irq_entries_start)
  	 * tracking that we're in kernel mode.
  	 */
  	SWAPGS
@@ -104,7 +90,7 @@ index 044d18e..4a28c4a 100644
 
  	/*
  	 * We need to tell lockdep that IRQs are off.  We can't do this until
-@@ -533,6 +539,7 @@ GLOBAL(retint_user)
+@@ -533,6 +540,7 @@ GLOBAL(retint_user)
  	mov	%rsp,%rdi
  	call	prepare_exit_to_usermode
  	TRACE_IRQS_IRETQ
@@ -112,7 +98,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS
  	jmp	restore_regs_and_iret
 
-@@ -610,6 +617,7 @@ native_irq_return_ldt:
+@@ -610,6 +618,7 @@ native_irq_return_ldt:
 
  	pushq	%rdi				/* Stash user RDI */
  	SWAPGS
@@ -120,7 +106,7 @@ index 044d18e..4a28c4a 100644
  	movq	PER_CPU_VAR(espfix_waddr), %rdi
  	movq	%rax, (0*8)(%rdi)		/* user RAX */
  	movq	(1*8)(%rsp), %rax		/* user RIP */
-@@ -636,6 +644,7 @@ native_irq_return_ldt:
+@@ -636,6 +645,7 @@ native_irq_return_ldt:
  	 * still points to an RO alias of the ESPFIX stack.
  	 */
  	orq	PER_CPU_VAR(espfix_stack), %rax
@@ -128,7 +114,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS
  	movq	%rax, %rsp
 
-@@ -1034,6 +1043,7 @@ ENTRY(paranoid_entry)
+@@ -1034,6 +1044,7 @@ ENTRY(paranoid_entry)
  	testl	%edx, %edx
  	js	1f				/* negative -> in kernel */
  	SWAPGS
@@ -136,7 +122,7 @@ index 044d18e..4a28c4a 100644
  	xorl	%ebx, %ebx
  1:	ret
  END(paranoid_entry)
-@@ -1056,6 +1066,7 @@ ENTRY(paranoid_exit)
+@@ -1056,6 +1067,7 @@ ENTRY(paranoid_exit)
  	testl	%ebx, %ebx			/* swapgs needed? */
  	jnz	paranoid_exit_no_swapgs
  	TRACE_IRQS_IRETQ
@@ -144,7 +130,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS_UNSAFE_STACK
  	jmp	paranoid_exit_restore
  paranoid_exit_no_swapgs:
-@@ -1085,6 +1096,7 @@ ENTRY(error_entry)
+@@ -1085,6 +1097,7 @@ ENTRY(error_entry)
  	 * from user mode due to an IRET fault.
  	 */
  	SWAPGS
@@ -152,7 +138,7 @@ index 044d18e..4a28c4a 100644
 
  .Lerror_entry_from_usermode_after_swapgs:
  	/*
-@@ -1136,6 +1148,7 @@ ENTRY(error_entry)
+@@ -1136,6 +1149,7 @@ ENTRY(error_entry)
  	 * Switch to kernel gsbase:
  	 */
  	SWAPGS
@@ -160,7 +146,7 @@ index 044d18e..4a28c4a 100644
 
  	/*
  	 * Pretend that the exception came from user mode: set up pt_regs
-@@ -1234,6 +1247,7 @@ ENTRY(nmi)
+@@ -1234,6 +1248,7 @@ ENTRY(nmi)
  	 */
 
  	SWAPGS_UNSAFE_STACK
@@ -168,7 +154,7 @@ index 044d18e..4a28c4a 100644
  	cld
  	movq	%rsp, %rdx
  	movq	PER_CPU_VAR(cpu_current_top_of_stack), %rsp
-@@ -1274,6 +1288,7 @@ ENTRY(nmi)
+@@ -1274,6 +1289,7 @@ ENTRY(nmi)
  	 * Return back to user mode.  We must *not* do the normal exit
  	 * work, because we don't want to enable interrupts.
  	 */
@@ -176,7 +162,7 @@ index 044d18e..4a28c4a 100644
  	SWAPGS
  	jmp	restore_regs_and_iret
 
-@@ -1485,6 +1500,7 @@ end_repeat_nmi:
+@@ -1485,6 +1501,7 @@ end_repeat_nmi:
  	testl	%ebx, %ebx			/* swapgs needed? */
  	jnz	nmi_restore
  nmi_swapgs:
@@ -185,10 +171,18 @@ index 044d18e..4a28c4a 100644
  nmi_restore:
  	RESTORE_EXTRA_REGS
 diff --git a/arch/x86/entry/entry_64_compat.S b/arch/x86/entry/entry_64_compat.S
-index e1721da..32d83b4 100644
+index e1721da..f0e384e 100644
 --- a/arch/x86/entry/entry_64_compat.S
 +++ b/arch/x86/entry/entry_64_compat.S
-@@ -48,6 +48,7 @@
+@@ -13,6 +13,7 @@
+ #include <asm/irqflags.h>
+ #include <asm/asm.h>
+ #include <asm/smap.h>
++#include <asm/kaiser.h>
+ #include <linux/linkage.h>
+ #include <linux/err.h>
+
+@@ -48,6 +49,7 @@
  ENTRY(entry_SYSENTER_compat)
  	/* Interrupts are off on entry. */
  	SWAPGS_UNSAFE_STACK
@@ -196,7 +190,7 @@ index e1721da..32d83b4 100644
  	movq	PER_CPU_VAR(cpu_current_top_of_stack), %rsp
 
  	/*
-@@ -184,6 +185,7 @@ ENDPROC(entry_SYSENTER_compat)
+@@ -184,6 +186,7 @@ ENDPROC(entry_SYSENTER_compat)
  ENTRY(entry_SYSCALL_compat)
  	/* Interrupts are off on entry. */
  	SWAPGS_UNSAFE_STACK
@@ -204,7 +198,7 @@ index e1721da..32d83b4 100644
 
  	/* Stash user ESP and switch to the kernel stack. */
  	movl	%esp, %r8d
-@@ -259,6 +261,7 @@ sysret32_from_system_call:
+@@ -259,6 +262,7 @@ sysret32_from_system_call:
  	xorq	%r8, %r8
  	xorq	%r9, %r9
  	xorq	%r10, %r10
@@ -212,7 +206,7 @@ index e1721da..32d83b4 100644
  	movq	RSP-ORIG_RAX(%rsp), %rsp
  	swapgs
  	sysretl
-@@ -297,7 +300,7 @@ ENTRY(entry_INT80_compat)
+@@ -297,7 +301,7 @@ ENTRY(entry_INT80_compat)
  	PARAVIRT_ADJUST_EXCEPTION_FRAME
  	ASM_CLAC			/* Do this early to minimize exposure */
  	SWAPGS
@@ -221,7 +215,7 @@ index e1721da..32d83b4 100644
  	/*
  	 * User tracing code (ptrace or signal handlers) might assume that
  	 * the saved RAX contains a 32-bit number when we're invoking a 32-bit
-@@ -338,6 +341,7 @@ ENTRY(entry_INT80_compat)
+@@ -338,6 +342,7 @@ ENTRY(entry_INT80_compat)
 
  	/* Go back to user mode. */
  	TRACE_IRQS_ON
@@ -242,102 +236,30 @@ index b90e105..0817d63 100644
 
  #endif /* !ASSEMBLY_ */
 
-diff --git a/arch/x86/include/asm/irqflags.h b/arch/x86/include/asm/irqflags.h
-index ac7692d..2e20917 100644
---- a/arch/x86/include/asm/irqflags.h
-+++ b/arch/x86/include/asm/irqflags.h
-@@ -166,6 +166,68 @@ static inline int arch_irqs_disabled(void)
- #endif /* !__ASSEMBLY__ */
-
- #ifdef __ASSEMBLY__
-+
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+
-+.macro _SWITCH_TO_KERNEL_CR3 reg
-+movq %cr3, \reg
-+andq $(~0x1000), \reg
-+movq \reg, %cr3
-+.endm
-+
-+
-+.macro _SWITCH_TO_USER_CR3 reg
-+movq %cr3, \reg
-+orq $(0x1000), \reg
-+movq \reg, %cr3
-+.endm
-+
-+
-+.macro SWITCH_KERNEL_CR3
-+pushq %rax
-+_SWITCH_TO_KERNEL_CR3 %rax
-+popq %rax
-+.endm
-+
-+
-+.macro SWITCH_USER_CR3
-+pushq %rax
-+_SWITCH_TO_USER_CR3 %rax
-+popq %rax
-+.endm
-+
-+
-+.macro SWITCH_KERNEL_CR3_NO_STACK
-+movq %rax, PER_CPU_VAR(unsafe_stack_register_backup)
-+_SWITCH_TO_KERNEL_CR3 %rax
-+movq PER_CPU_VAR(unsafe_stack_register_backup), %rax
-+.endm
-+
-+
-+.macro SWITCH_USER_CR3_NO_STACK
-+
-+movq %rax, PER_CPU_VAR(unsafe_stack_register_backup)
-+_SWITCH_TO_USER_CR3 %rax
-+movq PER_CPU_VAR(unsafe_stack_register_backup), %rax
-+
-+.endm
-+
-+#else
-+
-+.macro SWITCH_KERNEL_CR3 reg
-+.endm
-+
-+.macro SWITCH_USER_CR3 reg
-+.endm
-+
-+.macro SWITCH_USER_CR3_NO_STACK
-+.endm
-+
-+.macro SWITCH_KERNEL_CR3_NO_STACK
-+.endm
-+
-+#endif
-+
- #ifdef CONFIG_TRACE_IRQFLAGS
- #  define TRACE_IRQS_ON		call trace_hardirqs_on_thunk;
- #  define TRACE_IRQS_OFF	call trace_hardirqs_off_thunk;
 diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
-index 437feb4..433b55e 100644
+index 437feb4..aeeabb9 100644
 --- a/arch/x86/include/asm/pgtable.h
 +++ b/arch/x86/include/asm/pgtable.h
-@@ -904,6 +904,9 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
+@@ -904,6 +904,10 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
  static inline void clone_pgd_range(pgd_t *dst, pgd_t *src, int count)
  {
         memcpy(dst, src, count * sizeof(pgd_t));
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
++       // clone the shadow pgd part as well
 +       memcpy(native_get_shadow_pgd(dst), native_get_shadow_pgd(src), count * sizeof(pgd_t));
 +#endif
  }
 
  #define PTE_SHIFT ilog2(PTRS_PER_PTE)
 diff --git a/arch/x86/include/asm/pgtable_64.h b/arch/x86/include/asm/pgtable_64.h
-index 62b77592..4fa0b9b 100644
+index 62b77592..550b473 100644
 --- a/arch/x86/include/asm/pgtable_64.h
 +++ b/arch/x86/include/asm/pgtable_64.h
-@@ -106,9 +106,28 @@ static inline void native_pud_clear(pud_t *pud)
+@@ -106,9 +106,30 @@ static inline void native_pud_clear(pud_t *pud)
  	native_set_pud(pud, native_make_pud(0));
  }
 
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +static inline pgd_t * native_get_shadow_pgd(pgd_t *pgdp) {
 +	return (pgd_t *)(void*)((unsigned long)(void*)pgdp | (unsigned long)PAGE_SIZE);
 +}
@@ -345,25 +267,27 @@ index 62b77592..4fa0b9b 100644
 +static inline pgd_t * native_get_normal_pgd(pgd_t *pgdp) {
 +	return (pgd_t *)(void*)((unsigned long)(void*)pgdp &  ~(unsigned long)PAGE_SIZE);
 +}
-+#endif
++#endif /* CONFIG_KAISER */
 +
  static inline void native_set_pgd(pgd_t *pgdp, pgd_t pgd)
  {
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+  // We need to map the lower indices to the shadow PGD.
++#ifdef CONFIG_KAISER
++  // We know that a pgd is page aligned.
++  // Therefore the lower indices have to be mapped to user space.
++  // These pages are mapped to the shadow mapping.
 +  if ((((unsigned long)pgdp) % PAGE_SIZE) < (PAGE_SIZE / 2)) {
 +		native_get_shadow_pgd(pgdp)->pgd = pgd.pgd;
 +	}
 +
 +  pgdp->pgd = pgd.pgd & ~_PAGE_USER;
-+#else
++#else /* CONFIG_KAISER */
  	*pgdp = pgd;
 +#endif
  }
 
  static inline void native_pgd_clear(pgd_t *pgd)
 diff --git a/arch/x86/include/asm/pgtable_types.h b/arch/x86/include/asm/pgtable_types.h
-index 8b4de22..33655d1 100644
+index 8b4de22..00fecbb 100644
 --- a/arch/x86/include/asm/pgtable_types.h
 +++ b/arch/x86/include/asm/pgtable_types.h
 @@ -45,7 +45,11 @@
@@ -371,7 +295,7 @@ index 8b4de22..33655d1 100644
  #define _PAGE_DIRTY	(_AT(pteval_t, 1) << _PAGE_BIT_DIRTY)
  #define _PAGE_PSE	(_AT(pteval_t, 1) << _PAGE_BIT_PSE)
 -#define _PAGE_GLOBAL	(_AT(pteval_t, 1) << _PAGE_BIT_GLOBAL)
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +#define _PAGE_GLOBAL	(_AT(pteval_t, 0))
 +#else
 +#define _PAGE_GLOBAL  (_AT(pteval_t, 1) << _PAGE_BIT_GLOBAL)
@@ -384,7 +308,7 @@ index 8b4de22..33655d1 100644
  #endif
 
 -#define _PAGE_PROTNONE	(_AT(pteval_t, 1) << _PAGE_BIT_PROTNONE)
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +#define _PAGE_PROTNONE	(_AT(pteval_t, 0))
 +#else
 +#define _PAGE_PROTNONE  (_AT(pteval_t, 1) << _PAGE_BIT_PROTNONE)
@@ -440,14 +364,14 @@ index 9bab7a8..cfce6a6 100644
 
  /* May not be marked __init: used by software suspend */
 diff --git a/arch/x86/kernel/espfix_64.c b/arch/x86/kernel/espfix_64.c
-index 04f89ca..2f74799 100644
+index 04f89ca..9ff875a 100644
 --- a/arch/x86/kernel/espfix_64.c
 +++ b/arch/x86/kernel/espfix_64.c
 @@ -41,6 +41,7 @@
  #include <asm/pgalloc.h>
  #include <asm/setup.h>
  #include <asm/espfix.h>
-+extern void shadowmem_add_mapping(unsigned long addr, unsigned long size, unsigned long flags);
++#include <asm/kaiser.h>
 
  /*
   * Note: we only need 6*8 = 48 bytes for the espfix stack, but round
@@ -455,7 +379,7 @@ index 04f89ca..2f74799 100644
  	/* Install the espfix pud into the kernel page directory */
  	pgd_p = &init_level4_pgt[pgd_index(ESPFIX_BASE_ADDR)];
  	pgd_populate(&init_mm, pgd_p, (pud_t *)espfix_pud_page);
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +	// add the esp stack pud to the shadow mapping here.
 +	// This can be done directly, because the fixup stack has its own pud
 +	set_pgd(native_get_shadow_pgd(pgd_p), __pgd(_PAGE_TABLE | __pa((pud_t *)espfix_pud_page)));
@@ -464,14 +388,14 @@ index 04f89ca..2f74799 100644
  	/* Randomize the locations */
  	init_espfix_random();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index b467b14..155d870 100644
+index b467b14..ea43ac3 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -410,6 +410,14 @@ GLOBAL(early_recursion_flag)
  	.balign	PAGE_SIZE; \
  GLOBAL(name)
 
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +#define NEXT_PGD_PAGE(name) \
 +	.balign 2 * PAGE_SIZE; \
 +GLOBAL(name)
@@ -531,190 +455,16 @@ index b615a11..3ebc9f6 100644
  	.x86_tss = {
  		.sp0 = TOP_OF_INIT_STACK,
  #ifdef CONFIG_X86_32
-diff --git a/arch/x86/mm/init_64.c b/arch/x86/mm/init_64.c
-index af85b68..e30c26f 100644
---- a/arch/x86/mm/init_64.c
-+++ b/arch/x86/mm/init_64.c
-@@ -593,6 +593,179 @@ kernel_physical_mapping_init(unsigned long paddr_start,
- 	return paddr_last;
- }
-
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+/**
-+ * Get the real ppn from a address in kernel mapping.
-+ * @param address The virtual adrress
-+ * @return the physical address
-+ */
-+inline unsigned long get_pa_from_mapping (unsigned long address)
-+{
-+  pgd_t *pgd;
-+  pud_t *pud;
-+  pmd_t *pmd;
-+  pte_t *pte;
-+
-+  pgd = pgd_offset_k(address);
-+  if(pgd_none(*pgd))
-+  {
-+    return 0;
-+  }
-+  else if(pgd_large(*pgd))
-+  {
-+    // Is not supported
-+    return 0;
-+  }
-+
-+  pud = pud_offset(pgd, address);
-+  if(pud_none(*pud))
-+  {
-+    return 0;
-+  }
-+  else if(pud_large(*pud))
-+  {
-+    return (pud_pfn(*pud) << PAGE_SHIFT) | (address & ~PUD_PAGE_MASK);
-+  }
-+
-+  pmd = pmd_offset(pud, address);
-+  if(pmd_none(*pmd))
-+  {
-+    return 0;
-+  }
-+  else if(pmd_large(*pmd))
-+  {
-+    return (pmd_pfn(*pmd) << PAGE_SHIFT) | (address & ~PMD_PAGE_MASK);
-+  }
-+
-+  pte = pte_offset_kernel(pmd, address);
-+  if(pte_none(*pte))
-+  {
-+    return 0;
-+  }
-+  return (pte_pfn(*pte) << PAGE_SHIFT) | (address & ~PAGE_MASK);
-+}
-+
-+void _shadowmem_copy_mapping (unsigned long start_addr, unsigned long size,
-+                         unsigned long flags)
-+{
-+  pgd_t *pgd;
-+  pud_t *pud;
-+  pmd_t *pmd;
-+  pte_t *pte;
-+  unsigned long address;
-+  unsigned long end_addr = start_addr + size;
-+  unsigned long target_address;
-+
-+  for (address = PAGE_ALIGN(start_addr - (PAGE_SIZE - 1));
-+      address < PAGE_ALIGN(end_addr); address += PAGE_SIZE)
-+  {
-+    target_address = get_pa_from_mapping(address);
-+
-+    pgd = native_get_shadow_pgd(pgd_offset_k(address));
-+
-+    BUG_ON(pgd_none(*pgd) && "All shadow pgds should be mapped at this time\n");
-+    BUG_ON(pgd_large(*pgd));
-+
-+    pud = pud_offset(pgd, address);
-+    if(pud_none(*pud))
-+    {
-+      set_pud(pud, __pud(_PAGE_TABLE | __pa(pmd_alloc_one(0, address))));
-+    }
-+    BUG_ON(pud_large(*pud));
-+
-+    pmd = pmd_offset(pud, address);
-+    if(pmd_none(*pmd))
-+    {
-+      set_pmd(pmd, __pmd(_PAGE_TABLE | __pa(pte_alloc_one_kernel(0, address))));
-+    }
-+    BUG_ON(pmd_large(*pmd));
-+
-+    pte = pte_offset_kernel(pmd, address);
-+    if(pte_none(*pte))
-+    {
-+      set_pte(pte, __pte(flags | target_address));
-+    }
-+    else
-+    {
-+      BUG_ON(__pa(pte_page(*pte)) != target_address);
-+    }
-+  }
-+}
-+
-+// at first, add a pmd for every pgd entry in the shadowmem-kernel-part of the kernel mapping
-+static inline void _shadowmem_initialize_mapping(void)
-+{
-+  pgd_t *pgd;
-+  int i = 0;
-+
-+  spin_lock(&pgd_lock);
-+
-+  pgd = native_get_shadow_pgd(pgd_offset_k((unsigned long )0));
-+  for (i = PTRS_PER_PGD / 2; i < PTRS_PER_PGD; i++)
-+  {
-+    set_pgd(pgd + i, __pgd(_PAGE_TABLE |__pa(pud_alloc_one(0, 0))));
-+  }
-+
-+  spin_unlock(&pgd_lock);
-+}
-+
-+///RFE: TODO: Continue
-+extern char  __per_cpu_user_mapped_start[], __per_cpu_user_mapped_end[];
-+spinlock_t shadow_table_lock;
-+void shadowmem_initialize_mapping(void)
-+{
-+  int cpu;
-+
-+  spin_lock(&shadow_table_lock);
-+
-+  _shadowmem_initialize_mapping();
-+
-+  for_each_possible_cpu(cpu)
-+  {
-+    // map the per cpu user variables
-+    _shadowmem_copy_mapping(
-+        (unsigned long) (__per_cpu_user_mapped_start + per_cpu_offset(cpu)),
-+        (unsigned long) __per_cpu_user_mapped_end - (unsigned long) __per_cpu_user_mapped_start,
-+        __PAGE_KERNEL);
-+  }
-+
-+  // map the entry/exit text section, which is responsible to switch between user- and kernel mode
-+  _shadowmem_copy_mapping(
-+      (unsigned long) __entry_text_start,
-+      (unsigned long) __entry_text_end - (unsigned long) __entry_text_start,
-+      __PAGE_KERNEL_RX);
-+
-+  // the fixed map address of the idt_table
-+  _shadowmem_copy_mapping(
-+      (unsigned long) idt_descr.address,
-+      sizeof(gate_desc) * NR_VECTORS,
-+      __PAGE_KERNEL_RO);
-+
-+  spin_unlock(&shadow_table_lock);
-+}
-+
-+// add a mapping to the shadow-mapping, and synchronize the mappings
-+void shadowmem_add_mapping(unsigned long addr, unsigned long size, unsigned long flags)
-+{
-+  spin_lock(&shadow_table_lock);
-+  _shadowmem_copy_mapping(addr, size, flags);
-+  spin_unlock(&shadow_table_lock);
-+}
-+
-+extern void unmap_pud_range(pgd_t *pgd, unsigned long start, unsigned long end);
-+void shadowmem_remove_mapping(unsigned long start, unsigned long size)
-+{
-+  pgd_t *pgd = native_get_shadow_pgd(pgd_offset_k(start));
-+  spin_lock(&shadow_table_lock);
-+  do
-+  {
-+    unmap_pud_range(pgd, start, start + size);
-+  }
-+  while (pgd++ != native_get_shadow_pgd(pgd_offset_k(start + size)));
-+  spin_unlock(&shadow_table_lock);
-+}
-+#endif
-+
- #ifndef CONFIG_NUMA
- void __init initmem_init(void)
- {
+diff --git a/arch/x86/mm/Makefile b/arch/x86/mm/Makefile
+index 96d2b84..682c162 100644
+--- a/arch/x86/mm/Makefile
++++ b/arch/x86/mm/Makefile
+@@ -38,4 +38,4 @@ obj-$(CONFIG_NUMA_EMU)		+= numa_emulation.o
+ obj-$(CONFIG_X86_INTEL_MPX)	+= mpx.o
+ obj-$(CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS) += pkeys.o
+ obj-$(CONFIG_RANDOMIZE_MEMORY) += kaslr.o
+-
++obj-$(CONFIG_KAISER) += kaiser.o
 diff --git a/arch/x86/mm/pageattr.c b/arch/x86/mm/pageattr.c
 index 5a287e5..420df2c 100644
 --- a/arch/x86/mm/pageattr.c
@@ -729,15 +479,15 @@ index 5a287e5..420df2c 100644
  	pud_t *pud = pud_offset(pgd, start);
 
 diff --git a/arch/x86/mm/pgtable.c b/arch/x86/mm/pgtable.c
-index 3feec5a..3b53050 100644
+index 3feec5a..833ab5f 100644
 --- a/arch/x86/mm/pgtable.c
 +++ b/arch/x86/mm/pgtable.c
-@@ -346,12 +346,44 @@ static inline void _pgd_free(pgd_t *pgd)
+@@ -346,12 +346,38 @@ static inline void _pgd_free(pgd_t *pgd)
  #else
  static inline pgd_t *_pgd_alloc(void)
  {
 -	return (pgd_t *)__get_free_page(PGALLOC_GFP);
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +  // Instead of one PML4, we aquire two PML4s and, thus, an 8kb-aligned memory
 +  // block. Therefore, we have to allocate at least 3 pages. However, the
 +  // __get_free_pages returns us 4 pages. Hence, we store the base pointer at
@@ -748,17 +498,11 @@ index 3feec5a..3b53050 100644
 +
 +  if(native_get_normal_pgd((pgd_t*) pages) == (pgd_t*) pages)
 +  {
-+    // throw away the last page
-+    /* free_page(pages + (2 * PAGE_SIZE)); */
-+    /* free_page(pages + (3 * PAGE_SIZE)); */
 +    *((unsigned long*)(pages + 2 * PAGE_SIZE)) = pages;
 +    return (pgd_t *) pages;
 +  }
 +  else
 +  {
-+    // throw away the first page
-+    /* free_page(pages); */
-+    /* free_page(pages + (3 * PAGE_SIZE)); */
 +    *((unsigned long*)(pages + 3 * PAGE_SIZE)) = pages;
 +    return (pgd_t *) (pages + PAGE_SIZE);
 +  }
@@ -769,7 +513,7 @@ index 3feec5a..3b53050 100644
 
  static inline void _pgd_free(pgd_t *pgd)
  {
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +  unsigned long pages = *((unsigned long*) ((char*) pgd + 2 * PAGE_SIZE));
 +	free_pages(pages, get_order(4*PAGE_SIZE));
 +#else
@@ -801,14 +545,14 @@ index 0968d13..eea0fc1 100644
  	*(.data..percpu..page_aligned)					\
  	. = ALIGN(cacheline);						\
 diff --git a/include/linux/percpu-defs.h b/include/linux/percpu-defs.h
-index 8f16299..9fd4976 100644
+index 8f16299..8ea945f 100644
 --- a/include/linux/percpu-defs.h
 +++ b/include/linux/percpu-defs.h
 @@ -35,6 +35,12 @@
 
  #endif
 
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
++#ifdef CONFIG_KAISER
 +#define USER_MAPPED_SECTION "..user_mapped"
 +#else
 +#define USER_MAPPED_SECTION ""
@@ -863,10 +607,10 @@ index 8f16299..9fd4976 100644
  /*
   * Declaration/definition used for per-CPU variables that must be read mostly.
 diff --git a/init/main.c b/init/main.c
-index b0c9d6f..19a0472 100644
+index b0c9d6f..0b48d95 100644
 --- a/init/main.c
 +++ b/init/main.c
-@@ -83,6 +83,7 @@
+@@ -83,11 +83,13 @@
  #include <linux/io.h>
  #include <linux/cache.h>
 
@@ -874,39 +618,35 @@ index b0c9d6f..19a0472 100644
  #include <asm/io.h>
  #include <asm/bugs.h>
  #include <asm/setup.h>
-@@ -461,6 +462,9 @@ void __init __weak thread_stack_cache_init(void)
- }
- #endif
+ #include <asm/sections.h>
+ #include <asm/cacheflush.h>
++#include <asm/kaiser.h>
 
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+extern void __init shadowmem_initialize_mapping(void);
-+#endif
- /*
-  * Set up kernel memory allocators
-  */
-@@ -477,6 +481,9 @@ static void __init mm_init(void)
+ static int kernel_init(void *);
+
+@@ -477,6 +479,9 @@ static void __init mm_init(void)
  	pgtable_init();
  	vmalloc_init();
  	ioremap_huge_init();
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+	shadowmem_initialize_mapping();
++#ifdef CONFIG_KAISER
++	kaiser_init();
 +#endif
  }
 
  asmlinkage __visible void __init start_kernel(void)
 diff --git a/kernel/fork.c b/kernel/fork.c
-index 11c5c8a..639a316 100644
+index 11c5c8a..491eb8e 100644
 --- a/kernel/fork.c
 +++ b/kernel/fork.c
 @@ -211,8 +211,12 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
  #endif
  }
 
-+extern void shadowmem_remove_mapping(unsigned long start_addr, unsigned long size);
++extern void kaiser_remove_mapping(unsigned long start_addr, unsigned long size);
  static inline void free_thread_stack(struct task_struct *tsk)
  {
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+  shadowmem_remove_mapping((unsigned long)tsk->stack, THREAD_SIZE);
++#ifdef CONFIG_KAISER
++  kaiser_remove_mapping((unsigned long)tsk->stack, THREAD_SIZE);
 +#endif
  #ifdef CONFIG_VMAP_STACK
  	if (task_stack_vm_area(tsk)) {
@@ -915,7 +655,7 @@ index 11c5c8a..639a316 100644
  	*stackend = STACK_END_MAGIC;	/* for overflow detection */
  }
 
-+extern void shadowmem_add_mapping(unsigned long addr, unsigned long size, unsigned long flags);
++extern void kaiser_add_mapping(unsigned long addr, unsigned long size, unsigned long flags);
  static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
  {
  	struct task_struct *tsk;
@@ -923,27 +663,27 @@ index 11c5c8a..639a316 100644
  	 * functions again.
  	 */
  	tsk->stack = stack;
-+#ifdef CONFIG_UNMAP_KERNEL_IN_USER_MODE
-+	shadowmem_add_mapping((unsigned long)tsk->stack, THREAD_SIZE, __PAGE_KERNEL);
++#ifdef CONFIG_KAISER
++	kaiser_add_mapping((unsigned long)tsk->stack, THREAD_SIZE, __PAGE_KERNEL);
 +#endif
  #ifdef CONFIG_VMAP_STACK
  	tsk->stack_vm_area = stack_vm_area;
  #endif
 diff --git a/security/Kconfig b/security/Kconfig
-index 118f454..7ebcad6 100644
+index 118f454..f515ac3 100644
 --- a/security/Kconfig
 +++ b/security/Kconfig
 @@ -30,6 +30,13 @@ config SECURITY
  	  model will be used.
 
  	  If you are unsure how to answer this question, answer N.
-+config UNMAP_KERNEL_IN_USER_MODE
++config KAISER
 +	bool "Remove the kernel mapping in user mode"
 +	depends on X86_64
 +	depends on !PARAVIRT
 +	help
-+	  The kernel mapping may leak some information to the user. This can be prevented by removing
-+	  the kernel evey time the kernel switches to user mode.
++	  This enforces a strict kernel and user space isolation in order to close
++	  hardware side channels on kernel address information.
 
  config SECURITYFS
  	bool "Enable the securityfs filesystem"

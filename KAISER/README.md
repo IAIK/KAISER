@@ -39,7 +39,7 @@ To use the currently used one, copy `` /boot/config-`uname -r` `` to ``.config``
 
 ### Enable KAISER
 
-In order to enable KAISER, add `CONFIG_UNMAP_KERNEL_IN_USER_MODE=y` to your
+In order to enable KAISER, add `CONFIG_KAISER=y` to your
 ``.config`` file or by executing
 
     make menuconfig
