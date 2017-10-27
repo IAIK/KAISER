@@ -1,4 +1,4 @@
-From c4b1831d44c6144d3762ccc72f0c4e71a0c713e5 Mon Sep 17 00:00:00 2001
+From 908caa22401e725811f116483409d16b560ecfdb Mon Sep 17 00:00:00 2001
 From: Richard Fellner <richard.fellner@student.tugraz.at>
 Date: Thu, 4 May 2017 14:16:44 +0200
 Subject: [PATCH] KAISER: Kernel Address Isolation
@@ -9,7 +9,11 @@ hardware side channels on kernel address information.
 
 More information about the patch can be found on:
 
-        https://github.com/IAIK/KAISER
+    https://github.com/IAIK/KAISER
+
+Signed-off-by: Moritz Lipp <moritz.lipp@iaik.tugraz.at>
+Signed-off-by: Daniel Gruss <daniel.gruss@iaik.tugraz.at>
+Signed-off-by: Michael Schwarz <michael.schwarz@iaik.tugraz.at>
 ---
  arch/x86/entry/entry_64.S            |  17 ++++
  arch/x86/entry/entry_64_compat.S     |   7 +-
@@ -38,7 +42,7 @@ More information about the patch can be found on:
  create mode 100644 arch/x86/mm/kaiser.c
 
 diff --git a/arch/x86/entry/entry_64.S b/arch/x86/entry/entry_64.S
-index 044d18e..631c7bf 100644
+index 044d18ebc43c..631c7bf88f61 100644
 --- a/arch/x86/entry/entry_64.S
 +++ b/arch/x86/entry/entry_64.S
 @@ -37,6 +37,7 @@
@@ -175,7 +179,7 @@ index 044d18e..631c7bf 100644
  nmi_restore:
  	RESTORE_EXTRA_REGS
 diff --git a/arch/x86/entry/entry_64_compat.S b/arch/x86/entry/entry_64_compat.S
-index e1721da..f0e384e 100644
+index e1721dafbcb1..f0e384ee8fc6 100644
 --- a/arch/x86/entry/entry_64_compat.S
 +++ b/arch/x86/entry/entry_64_compat.S
 @@ -13,6 +13,7 @@
@@ -228,7 +232,7 @@ index e1721da..f0e384e 100644
  	jmp	restore_regs_and_iret
  END(entry_INT80_compat)
 diff --git a/arch/x86/include/asm/hw_irq.h b/arch/x86/include/asm/hw_irq.h
-index b90e105..0817d63 100644
+index b90e1053049b..0817d63bce41 100644
 --- a/arch/x86/include/asm/hw_irq.h
 +++ b/arch/x86/include/asm/hw_irq.h
 @@ -178,7 +178,7 @@ extern char irq_entries_start[];
@@ -242,7 +246,7 @@ index b90e105..0817d63 100644
 
 diff --git a/arch/x86/include/asm/kaiser.h b/arch/x86/include/asm/kaiser.h
 new file mode 100644
-index 0000000..63ee830
+index 000000000000..63ee8309b35b
 --- /dev/null
 +++ b/arch/x86/include/asm/kaiser.h
 @@ -0,0 +1,113 @@
@@ -360,7 +364,7 @@ index 0000000..63ee830
 +
 +#endif /* _ASM_X86_KAISER_H */
 diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
-index 437feb4..aeeabb9 100644
+index 437feb436efa..aeeabb92d9de 100644
 --- a/arch/x86/include/asm/pgtable.h
 +++ b/arch/x86/include/asm/pgtable.h
 @@ -904,6 +904,10 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
@@ -375,7 +379,7 @@ index 437feb4..aeeabb9 100644
 
  #define PTE_SHIFT ilog2(PTRS_PER_PTE)
 diff --git a/arch/x86/include/asm/pgtable_64.h b/arch/x86/include/asm/pgtable_64.h
-index 62b77592..550b473 100644
+index 62b775926045..550b4730c5d3 100644
 --- a/arch/x86/include/asm/pgtable_64.h
 +++ b/arch/x86/include/asm/pgtable_64.h
 @@ -106,9 +106,30 @@ static inline void native_pud_clear(pud_t *pud)
@@ -410,7 +414,7 @@ index 62b77592..550b473 100644
 
  static inline void native_pgd_clear(pgd_t *pgd)
 diff --git a/arch/x86/include/asm/pgtable_types.h b/arch/x86/include/asm/pgtable_types.h
-index 8b4de22..00fecbb 100644
+index 8b4de22d6429..00fecbb153ac 100644
 --- a/arch/x86/include/asm/pgtable_types.h
 +++ b/arch/x86/include/asm/pgtable_types.h
 @@ -45,7 +45,11 @@
@@ -440,7 +444,7 @@ index 8b4de22..00fecbb 100644
  #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER |	\
  			 _PAGE_ACCESSED | _PAGE_DIRTY)
 diff --git a/arch/x86/include/asm/processor.h b/arch/x86/include/asm/processor.h
-index 1be64da..26d3505 100644
+index 1be64da0384e..26d3505f2d93 100644
 --- a/arch/x86/include/asm/processor.h
 +++ b/arch/x86/include/asm/processor.h
 @@ -339,7 +339,7 @@ struct tss_struct {
@@ -465,7 +469,7 @@ index 1be64da..26d3505 100644
 
  DECLARE_PER_CPU_FIRST(union irq_stack_union, irq_stack_union) __visible;
 diff --git a/arch/x86/kernel/cpu/common.c b/arch/x86/kernel/cpu/common.c
-index 9bab7a8..cfce6a6 100644
+index 9bab7a8a4293..cfce6a6777d0 100644
 --- a/arch/x86/kernel/cpu/common.c
 +++ b/arch/x86/kernel/cpu/common.c
 @@ -93,7 +93,7 @@ static const struct cpu_dev default_cpu = {
@@ -487,7 +491,7 @@ index 9bab7a8..cfce6a6 100644
 
  /* May not be marked __init: used by software suspend */
 diff --git a/arch/x86/kernel/espfix_64.c b/arch/x86/kernel/espfix_64.c
-index 04f89ca..9ff875a 100644
+index 04f89caef9c4..9ff875a1aa24 100644
 --- a/arch/x86/kernel/espfix_64.c
 +++ b/arch/x86/kernel/espfix_64.c
 @@ -41,6 +41,7 @@
@@ -511,7 +515,7 @@ index 04f89ca..9ff875a 100644
  	/* Randomize the locations */
  	init_espfix_random();
 diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
-index b467b14..ea43ac3 100644
+index b467b14b03eb..ea43ac33ea55 100644
 --- a/arch/x86/kernel/head_64.S
 +++ b/arch/x86/kernel/head_64.S
 @@ -410,6 +410,14 @@ GLOBAL(early_recursion_flag)
@@ -553,7 +557,7 @@ index b467b14..ea43ac3 100644
  	.org    init_level4_pgt + L4_PAGE_OFFSET*8, 0
  	.quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
 diff --git a/arch/x86/kernel/irqinit.c b/arch/x86/kernel/irqinit.c
-index 1423ab1..f480b38 100644
+index 1423ab1b0312..f480b38a03c3 100644
 --- a/arch/x86/kernel/irqinit.c
 +++ b/arch/x86/kernel/irqinit.c
 @@ -51,7 +51,7 @@ static struct irqaction irq2 = {
@@ -566,7 +570,7 @@ index 1423ab1..f480b38 100644
  };
 
 diff --git a/arch/x86/kernel/process.c b/arch/x86/kernel/process.c
-index b615a11..3ebc9f6 100644
+index b615a1113f58..3ebc9f60973b 100644
 --- a/arch/x86/kernel/process.c
 +++ b/arch/x86/kernel/process.c
 @@ -40,7 +40,7 @@
@@ -579,7 +583,7 @@ index b615a11..3ebc9f6 100644
  		.sp0 = TOP_OF_INIT_STACK,
  #ifdef CONFIG_X86_32
 diff --git a/arch/x86/mm/Makefile b/arch/x86/mm/Makefile
-index 96d2b84..682c162 100644
+index 96d2b847e09e..682c162333ba 100644
 --- a/arch/x86/mm/Makefile
 +++ b/arch/x86/mm/Makefile
 @@ -38,4 +38,4 @@ obj-$(CONFIG_NUMA_EMU)		+= numa_emulation.o
@@ -590,7 +594,7 @@ index 96d2b84..682c162 100644
 +obj-$(CONFIG_KAISER) += kaiser.o
 diff --git a/arch/x86/mm/kaiser.c b/arch/x86/mm/kaiser.c
 new file mode 100644
-index 0000000..db58838
+index 000000000000..db588385c061
 --- /dev/null
 +++ b/arch/x86/mm/kaiser.c
 @@ -0,0 +1,172 @@
@@ -767,7 +771,7 @@ index 0000000..db58838
 +}
 +#endif /* CONFIG_KAISER */
 diff --git a/arch/x86/mm/pageattr.c b/arch/x86/mm/pageattr.c
-index 5a287e5..420df2c 100644
+index 5a287e523eab..420df2c7a65f 100644
 --- a/arch/x86/mm/pageattr.c
 +++ b/arch/x86/mm/pageattr.c
 @@ -823,7 +823,7 @@ static void unmap_pmd_range(pud_t *pud, unsigned long start, unsigned long end)
@@ -780,7 +784,7 @@ index 5a287e5..420df2c 100644
  	pud_t *pud = pud_offset(pgd, start);
 
 diff --git a/arch/x86/mm/pgtable.c b/arch/x86/mm/pgtable.c
-index 3feec5a..833ab5f 100644
+index 3feec5af4e67..833ab5f6f2f3 100644
 --- a/arch/x86/mm/pgtable.c
 +++ b/arch/x86/mm/pgtable.c
 @@ -346,12 +346,38 @@ static inline void _pgd_free(pgd_t *pgd)
@@ -824,7 +828,7 @@ index 3feec5a..833ab5f 100644
  #endif /* CONFIG_X86_PAE */
 
 diff --git a/include/asm-generic/vmlinux.lds.h b/include/asm-generic/vmlinux.lds.h
-index 0968d13..eea0fc1 100644
+index 0968d13b3885..eea0fc13cccd 100644
 --- a/include/asm-generic/vmlinux.lds.h
 +++ b/include/asm-generic/vmlinux.lds.h
 @@ -765,7 +765,16 @@
@@ -846,7 +850,7 @@ index 0968d13..eea0fc1 100644
  	*(.data..percpu..page_aligned)					\
  	. = ALIGN(cacheline);						\
 diff --git a/include/linux/percpu-defs.h b/include/linux/percpu-defs.h
-index 8f16299..8ea945f 100644
+index 8f16299ca068..8ea945f63a05 100644
 --- a/include/linux/percpu-defs.h
 +++ b/include/linux/percpu-defs.h
 @@ -35,6 +35,12 @@
@@ -908,7 +912,7 @@ index 8f16299..8ea945f 100644
  /*
   * Declaration/definition used for per-CPU variables that must be read mostly.
 diff --git a/init/main.c b/init/main.c
-index b0c9d6f..0b48d95 100644
+index b0c9d6facef9..0b48d9536485 100644
 --- a/init/main.c
 +++ b/init/main.c
 @@ -83,11 +83,13 @@
@@ -936,7 +940,7 @@ index b0c9d6f..0b48d95 100644
 
  asmlinkage __visible void __init start_kernel(void)
 diff --git a/kernel/fork.c b/kernel/fork.c
-index 11c5c8a..491eb8e 100644
+index 11c5c8ab827c..491eb8e6f6d1 100644
 --- a/kernel/fork.c
 +++ b/kernel/fork.c
 @@ -211,8 +211,12 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
@@ -971,7 +975,7 @@ index 11c5c8a..491eb8e 100644
  	tsk->stack_vm_area = stack_vm_area;
  #endif
 diff --git a/security/Kconfig b/security/Kconfig
-index 118f454..f515ac3 100644
+index 118f4549404e..f515ac302257 100644
 --- a/security/Kconfig
 +++ b/security/Kconfig
 @@ -30,6 +30,13 @@ config SECURITY
@@ -989,5 +993,5 @@ index 118f454..f515ac3 100644
  config SECURITYFS
  	bool "Enable the securityfs filesystem"
 --
-2.9.3
+2.11.0
 
